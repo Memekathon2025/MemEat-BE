@@ -16,6 +16,8 @@ export class GameService {
   private readonly COLLISION_CHECK_INTERVAL = 2; // 2프레임마다 체크
   private readonly GRID_SIZE = 200; // 그리드 크기 (픽셀)
   private readonly CHECK_RADIUS = 500; // 충돌 체크 반경
+  private readonly SPAWN_ZONE_SIZE = 300; // 스폰 영역 크기 (충돌 무효 영역)
+  private readonly MAP_CENTER = { x: 800, y: 400 }; // 맵 중앙 좌표
 
   constructor() {
     this.createMainRoom();
@@ -46,15 +48,16 @@ export class GameService {
     const newFoods = await mockBlockchain.distributeTokensToMap(stakedTokens);
     room.foods.push(...newFoods);
 
-    // 플레이어 생성
+    // 플레이어 생성 - 맵 중앙에서 시작 (약간의 랜덤성 추가)
+    const spawnOffset = 50; // 중앙에서 최대 50픽셀 오프셋
     const player: Player = {
       id: `player_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
       socketId,
       name,
       walletAddress,
       position: {
-        x: Math.random() * room.worldSize.width - 1200,
-        y: Math.random() * room.worldSize.height - 600,
+        x: this.MAP_CENTER.x + (Math.random() - 0.5) * spawnOffset,
+        y: this.MAP_CENTER.y + (Math.random() - 0.5) * spawnOffset,
       },
       angle: Math.random() * Math.PI * 2,
       score: 0,
@@ -147,6 +150,34 @@ export class GameService {
     return grid;
   }
 
+  // 플레이어가 스폰 영역 안에 있는지 확인
+  private isInSpawnZone(position: { x: number; y: number }): boolean {
+    const dx = Math.abs(position.x - this.MAP_CENTER.x);
+    const dy = Math.abs(position.y - this.MAP_CENTER.y);
+    return dx <= this.SPAWN_ZONE_SIZE / 2 && dy <= this.SPAWN_ZONE_SIZE / 2;
+  }
+
+  // 플레이어의 몸 위치를 근사적으로 계산 (angle과 length 기반)
+  private getApproximateBodyPositions(
+    player: Player,
+    samples: number = 5
+  ): { x: number; y: number }[] {
+    const positions = [{ ...player.position }]; // 머리
+    const segmentLength = 3.5; // 각 세그먼트 길이 (size/2)
+
+    // 최대 samples 또는 player.length 중 작은 값만큼 샘플링
+    const actualSamples = Math.min(player.length, samples);
+
+    for (let i = 1; i < actualSamples; i++) {
+      positions.push({
+        x: player.position.x - segmentLength * i * Math.cos(player.angle),
+        y: player.position.y - segmentLength * i * Math.sin(player.angle),
+      });
+    }
+
+    return positions;
+  }
+
   checkCollisions(): string[] {
     // 프레임 스킵
     this.collisionCheckCounter++;
@@ -192,11 +223,79 @@ export class GameService {
         // 거리가 CHECK_RADIUS보다 멀면 건너뛰기 (제곱근 계산 생략)
         if (distanceSquared > this.CHECK_RADIUS * this.CHECK_RADIUS) continue;
 
+        // 스폰 영역 보호: 둘 다 스폰 영역에 있으면 충돌 무시
+        const player1InSpawn = this.isInSpawnZone(player1.position);
+        const player2InSpawn = this.isInSpawnZone(player2.position);
+
+        if (player1InSpawn && player2InSpawn) {
+          // 둘 다 스폰 영역에 있으면 충돌 체크 안함
+          continue;
+        }
+
         // 실제 충돌 체크 (머리와 몸통)
         const collisionRadius = 15; // 충돌 반경
-        const distance = Math.sqrt(distanceSquared);
+        const collisionRadiusSquared = collisionRadius * collisionRadius;
 
-        if (distance < collisionRadius) {
+        // 몸 위치 근사 계산 (5개 샘플)
+        const body1 = this.getApproximateBodyPositions(player1, 5);
+        const body2 = this.getApproximateBodyPositions(player2, 5);
+
+        // 디버깅: 몸 샘플 정보 (10초마다)
+        if (
+          this.collisionCheckCounter % 300 === 0 &&
+          (body1.length > 1 || body2.length > 1)
+        ) {
+          console.log(`🐍 Body collision check:`, {
+            player1: {
+              name: player1.name,
+              length: player1.length,
+              bodySamples: body1.length,
+              angle: player1.angle.toFixed(2),
+            },
+            player2: {
+              name: player2.name,
+              length: player2.length,
+              bodySamples: body2.length,
+              angle: player2.angle.toFixed(2),
+            },
+            distance: Math.sqrt(distanceSquared).toFixed(2),
+          });
+        }
+
+        let hasCollision = false;
+        let collisionType = "";
+
+        // 1. player1 머리 vs player2 몸 (player2의 머리 제외)
+        for (let i = 1; i < body2.length; i++) {
+          const dx = player1.position.x - body2[i].x;
+          const dy = player1.position.y - body2[i].y;
+          if (dx * dx + dy * dy < collisionRadiusSquared) {
+            hasCollision = true;
+            collisionType = "head-to-body";
+            break;
+          }
+        }
+
+        // 2. player2 머리 vs player1 몸 (player1의 머리 제외)
+        if (!hasCollision) {
+          for (let i = 1; i < body1.length; i++) {
+            const dx = player2.position.x - body1[i].x;
+            const dy = player2.position.y - body1[i].y;
+            if (dx * dx + dy * dy < collisionRadiusSquared) {
+              hasCollision = true;
+              collisionType = "head-to-body";
+              break;
+            }
+          }
+        }
+
+        // 3. 머리 vs 머리 (기존 로직)
+        if (!hasCollision && distanceSquared < collisionRadiusSquared) {
+          hasCollision = true;
+          collisionType = "head-to-head";
+        }
+
+        if (hasCollision) {
           // 충돌 발생! 작은 쪽이 죽음
           let victim: Player;
           let killer: Player;
@@ -214,7 +313,7 @@ export class GameService {
           }
 
           console.log(
-            `💥 Collision! ${victim.name} (${victim.score}) killed by ${killer.name} (${killer.score})`
+            `💥 Collision (${collisionType})! ${victim.name} (${victim.score}) killed by ${killer.name} (${killer.score})`
           );
           deadPlayers.push(victim.socketId);
           break; // 이미 죽었으므로 더 이상 체크 안함
@@ -223,9 +322,9 @@ export class GameService {
     }
 
     // 죽은 플레이어들 처리
-    deadPlayers.forEach((socketId) => {
-      this.handlePlayerDeath(socketId);
-    });
+    // deadPlayers.forEach((socketId) => {
+    //   this.handlePlayerDeath(socketId);
+    // });
 
     return deadPlayers;
   }
@@ -302,7 +401,7 @@ export class GameService {
   getLeaderboard(): LeaderboardEntry[] {
     const room = this.rooms.get(this.mainRoomId)!;
 
-    return Array.from(room.players.values())
+    const result = Array.from(room.players.values())
       .filter((p) => p.alive)
       .sort((a, b) => b.score - a.score)
       .slice(0, 10)
@@ -311,6 +410,8 @@ export class GameService {
         score: p.score,
         survivalTime: Math.floor((Date.now() - p.joinTime) / 1000),
       }));
+
+    return result;
   }
 
   canEscape(socketId: string): boolean {

@@ -103,16 +103,28 @@ export function setupGameSocket(io: Server) {
     // 충돌 체크 (최적화됨)
     const deadPlayers = gameService.checkCollisions();
 
-    // 죽은 플레이어들에게 알림
-    deadPlayers.forEach((socketId) => {
-      io.to(socketId).emit("player-died-collision");
-    });
+    // 게임 상태 업데이트 (플레이어 위치 포함)
+    const gameState = gameService.getGameState();
+    io.emit("game-state", gameState);
 
     // 게임 상태 업데이트
     io.emit("game-state-update", {
       leaderboard: gameService.getGameState().leaderboard,
       playerCount: gameService.getGameState().players.length,
       foodCount: gameService.getGameState().foods.length,
+    });
+
+    // 죽은 플레이어들에게 알림
+    deadPlayers.forEach((socketId) => {
+      const deadPlayer = gameService.getPlayer(socketId);
+      if (deadPlayer) {
+        io.to(socketId).emit("player-died-collision", deadPlayer);
+      }
+    });
+
+    // 플레이어 삭제는 game state 전송 후에 수행
+    deadPlayers.forEach((socketId) => {
+      gameService.handlePlayerDeath(socketId);
     });
 
     // 10초마다 성능 통계 출력
