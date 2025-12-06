@@ -1,3 +1,4 @@
+import { priceService } from "./priceService";
 import {
   Player,
   Food,
@@ -5,12 +6,11 @@ import {
   TokenBalance,
   LeaderboardEntry,
 } from "../models/types";
-import { mockBlockchain } from "./mockBlockchain";
+import { relayerService } from "./relayerService";
 
 export class GameService {
   private rooms: Map<string, GameRoom> = new Map();
   private mainRoomId = "main-room";
-  private ESCAPE_THRESHOLD = 100; // 탈출 가능 점수
 
   private collisionCheckCounter = 0; // 프레임 스킵용
   private readonly COLLISION_CHECK_INTERVAL = 2; // 2프레임마다 체크
@@ -33,6 +33,86 @@ export class GameService {
     console.log("🎮 Main game room created");
   }
 
+  distributeTokensToMap(tokens: TokenBalance[]): Food[] {
+    const room = this.rooms.get(this.mainRoomId);
+    if (!room) {
+      console.error("Main room not found!");
+      return [];
+    }
+
+    const foods: Food[] = [];
+    const WORLD_SIZE = room.worldSize;
+    const FOOD_UNIT_SIZE = 0.1; // 각 food 크기 (0.1 토큰)
+
+    tokens.forEach((token) => {
+      // ✅ 토큰 보존 법칙: 정확히 나누기
+      const foodCount = Math.floor(token.amount / FOOD_UNIT_SIZE);
+      let totalDistributed = 0;
+
+      // 대부분의 food는 FOOD_UNIT_SIZE
+      for (let i = 0; i < foodCount; i++) {
+        const food: Food = {
+          id: `food_${Date.now()}_${i}_${Math.random()
+            .toString(36)
+            .substr(2, 9)}`,
+          position: {
+            x: Math.random() * WORLD_SIZE.width - WORLD_SIZE.width / 2,
+            y: Math.random() * WORLD_SIZE.height - WORLD_SIZE.height / 2,
+          },
+          token: {
+            address: token.address,
+            symbol: token.symbol,
+            amount: FOOD_UNIT_SIZE,
+            color: token.color,
+          },
+        };
+        foods.push(food);
+        totalDistributed += FOOD_UNIT_SIZE;
+      }
+
+      // 나머지 처리 (버림 방지)
+      const remainder = token.amount - totalDistributed;
+      if (remainder > 0.0001) {
+        foods.push({
+          id: `food_remainder_${Date.now()}_${Math.random()
+            .toString(36)
+            .substr(2, 9)}`,
+          position: {
+            x: Math.random() * WORLD_SIZE.width - WORLD_SIZE.width / 2,
+            y: Math.random() * WORLD_SIZE.height - WORLD_SIZE.height / 2,
+          },
+          token: {
+            address: token.address,
+            symbol: token.symbol,
+            amount: remainder,
+            color: token.color,
+          },
+        });
+        totalDistributed += remainder;
+      }
+
+      // ✅ 검증: 총합 확인
+      const diff = Math.abs(totalDistributed - token.amount);
+      if (diff > 0.0001) {
+        console.error(
+          `⚠️ Token amount mismatch! ${totalDistributed.toFixed(
+            6
+          )} !== ${token.amount.toFixed(6)} (diff: ${diff.toFixed(6)})`
+        );
+      } else {
+        console.log(
+          `🍕 Token ${token.symbol}: ${token.amount.toFixed(6)} → ${
+            foods.length
+          } foods (total: ${totalDistributed.toFixed(6)}) ✅`
+        );
+      }
+    });
+
+    // 맵에 추가
+    room.foods.push(...foods);
+    return foods;
+  }
+
   async addPlayer(
     socketId: string,
     name: string,
@@ -41,14 +121,26 @@ export class GameService {
   ): Promise<Player> {
     const room = this.rooms.get(this.mainRoomId)!;
 
-    // 스테이킹 검증
-    await mockBlockchain.verifyStaking(walletAddress, stakedTokens);
+    const existingPlayer = Array.from(room.players.values()).find(
+      (p) => p.walletAddress.toLowerCase() === walletAddress.toLowerCase()
+    );
 
-    // 스테이킹된 토큰을 맵에 배치
-    const newFoods = await mockBlockchain.distributeTokensToMap(stakedTokens);
-    room.foods.push(...newFoods);
+    if (existingPlayer) {
+      console.log(
+        `🔄 Removing old session for ${name} (${existingPlayer.socketId})`
+      );
 
-    // 플레이어 생성 - 맵 중앙에서 시작 (약간의 랜덤성 추가)
+      // 수집한 토큰이 있으면 맵에 재배치
+      if (existingPlayer.collectedTokens.length > 0) {
+        this.distributeTokensToMap(existingPlayer.collectedTokens);
+        console.log(
+          `🍕 Redistributed ${existingPlayer.collectedTokens.length} tokens from old session`
+        );
+      }
+
+      room.players.delete(existingPlayer.socketId);
+    }
+
     const spawnOffset = 50; // 중앙에서 최대 50픽셀 오프셋
     const player: Player = {
       id: `player_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
@@ -86,7 +178,7 @@ export class GameService {
     }
   }
 
-  eatFood(socketId: string, foodId: string): boolean {
+  async eatFood(socketId: string, foodId: string): Promise<boolean> {
     const room = this.rooms.get(this.mainRoomId)!;
     const player = room.players.get(socketId);
     const foodIndex = room.foods.findIndex((f) => f.id === foodId);
@@ -105,7 +197,11 @@ export class GameService {
         player.collectedTokens.push({ ...food.token });
       }
 
-      player.score += food.token.amount;
+      const tokenValue = await priceService.calculateTotalValue(
+        [{ address: food.token.address, amount: food.token.amount }],
+        43521
+      );
+      player.score += tokenValue;
       player.length++;
 
       // Food 제거
@@ -321,11 +417,6 @@ export class GameService {
       }
     }
 
-    // 죽은 플레이어들 처리
-    // deadPlayers.forEach((socketId) => {
-    //   this.handlePlayerDeath(socketId);
-    // });
-
     return deadPlayers;
   }
 
@@ -347,21 +438,50 @@ export class GameService {
     };
   }
 
-  async handlePlayerDeath(socketId: string) {
+  async handlePlayerDeath(socketId: string): Promise<{
+    success: boolean;
+    status: "DEAD" | "EXITED";
+  }> {
+    const room = this.rooms.get(this.mainRoomId)!;
+    const player = room.players.get(socketId);
+
+    if (!player) {
+      return { success: false, status: "DEAD" };
+    }
+
+    player.alive = false;
+
+    // relayer를 통해 컨트랙트 상태 업데이트 (Dead or Exited)
+    const result = await relayerService.handlePlayerDeath(player);
+
+    // 🔥 Dead일 때만 토큰 재배치
+    if (result.status === "DEAD" && player.collectedTokens.length > 0) {
+      const redistributedFoods = this.distributeTokensToMap(
+        player.collectedTokens
+      );
+      console.log(
+        `💀 ${player.name} died. Redistributed ${redistributedFoods.length} foods`
+      );
+    } else if (result.status === "EXITED") {
+      console.log(`🚀 ${player.name} escaped! Tokens reserved for claim.`);
+    }
+
+    room.players.delete(socketId);
+    return result;
+  }
+
+  async handlePlayerDisconnect(socketId: string) {
     const room = this.rooms.get(this.mainRoomId)!;
     const player = room.players.get(socketId);
 
     if (player) {
-      player.alive = false;
-
-      // 수집한 토큰을 다시 맵에 뿌림
+      // 수집한 토큰을 다시 맵에 뿌림 (재접속 전까지)
       if (player.collectedTokens.length > 0) {
-        const redistributedFoods = await mockBlockchain.distributeTokensToMap(
+        const redistributedFoods = this.distributeTokensToMap(
           player.collectedTokens
         );
-        room.foods.push(...redistributedFoods);
         console.log(
-          `💀 ${player.name} died. Redistributed ${redistributedFoods.length} foods`
+          `🔄 Redistributed ${redistributedFoods.length} foods (disconnect)`
         );
       }
 
@@ -369,32 +489,44 @@ export class GameService {
     }
   }
 
-  async handlePlayerEscape(socketId: string): Promise<boolean> {
-    const room = this.rooms.get(this.mainRoomId)!;
-    const player = room.players.get(socketId);
-
-    if (player && player.score >= this.ESCAPE_THRESHOLD) {
-      // 출금 처리
-      await mockBlockchain.withdrawTokens(
-        player.walletAddress,
-        player.collectedTokens
-      );
-
-      console.log(`🚀 ${player.name} escaped with ${player.score} score!`);
-      room.players.delete(socketId);
-      return true;
-    }
-
-    return false;
-  }
-
   getGameState() {
     const room = this.rooms.get(this.mainRoomId)!;
+
+    // 맵에 있는 토큰별 집계
+    const tokenSummary = new Map<
+      string,
+      {
+        symbol: string;
+        address: string;
+        amount: number;
+        count: number;
+        color: string;
+      }
+    >();
+
+    room.foods.forEach((food) => {
+      const key = food.token.symbol;
+      const existing = tokenSummary.get(key);
+
+      if (existing) {
+        existing.amount += food.token.amount;
+        existing.count += 1;
+      } else {
+        tokenSummary.set(key, {
+          symbol: food.token.symbol,
+          address: food.token.address,
+          amount: food.token.amount,
+          count: 1,
+          color: food.token.color || "#fff",
+        });
+      }
+    });
 
     return {
       players: Array.from(room.players.values()),
       foods: room.foods,
       leaderboard: this.getLeaderboard(),
+      mapTokens: Array.from(tokenSummary.values()),
     };
   }
 
@@ -414,11 +546,17 @@ export class GameService {
     return result;
   }
 
-  canEscape(socketId: string): boolean {
-    const room = this.rooms.get(this.mainRoomId)!;
-    const player = room.players.get(socketId);
+  async canEscape(socketId: string): Promise<boolean> {
+    const player = this.getPlayer(socketId);
+    if (!player) return false;
 
-    return player ? player.score >= this.ESCAPE_THRESHOLD : false;
+    const totalValue = await priceService.calculateTotalValue(
+      player.collectedTokens.map((t) => ({
+        address: t.address,
+        amount: t.amount,
+      }))
+    );
+    return totalValue >= 1;
   }
 
   getPlayer(socketId: string): Player | undefined {

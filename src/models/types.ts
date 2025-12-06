@@ -14,6 +14,7 @@ export interface Player {
 }
 
 export interface TokenBalance {
+  address: string;
   symbol: string;
   amount: number;
   color: string;
@@ -37,4 +38,3 @@ export interface LeaderboardEntry {
   score: number;
   survivalTime: number;
 }
-

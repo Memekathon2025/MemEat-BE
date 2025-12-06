@@ -2,8 +2,17 @@ import express from "express";
 import { createServer } from "http";
 import { Server } from "socket.io";
 import cors from "cors";
+import dotenv from "dotenv";
+dotenv.config();
+
 import { setupGameSocket } from "./socket/gameSocket";
 import { gameService } from "./services/gameService";
+import { getTokenPrice } from "./controllers/priceController";
+import {
+  checkActiveSession,
+  enterGame,
+  rejoinGame,
+} from "./controllers/gameController";
 
 const app = express();
 const httpServer = createServer(app);
@@ -33,6 +42,12 @@ app.get("/api/game-state", (req, res) => {
   res.json(gameState);
 });
 
+app.get("/api/price/:chainId/:tokenAddress", getTokenPrice);
+
+app.post("/api/enter-game", enterGame);
+app.get("/api/check-session", checkActiveSession);
+app.post("/api/rejoin-game", rejoinGame);
+
 // Socket.IO 설정
 setupGameSocket(io);
 
@@ -41,9 +56,9 @@ const PORT = process.env.PORT || 3333;
 httpServer.listen(PORT, () => {
   console.log(`
 ╔════════════════════════════════════════╗
-║   🐍 Snake Game Server Running!       ║
+║   🐍 Snake Game Server Running         ║
 ║                                        ║
-║   Port: ${PORT}                          ║
+║   Port: ${PORT}                        ║
 ║   Socket.IO: ✅ Ready                  ║
 ║   Mock Blockchain: ✅ Active           ║
 ╚════════════════════════════════════════╝
