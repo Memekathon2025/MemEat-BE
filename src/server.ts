@@ -10,6 +10,7 @@ import { gameService } from "./services/gameService";
 import { getTokenPrice } from "./controllers/priceController";
 import {
   checkActiveSession,
+  checkPendingClaim,
   enterGame,
   rejoinGame,
 } from "./controllers/gameController";
@@ -47,6 +48,7 @@ app.get("/api/price/:chainId/:tokenAddress", getTokenPrice);
 app.post("/api/enter-game", enterGame);
 app.get("/api/check-session", checkActiveSession);
 app.post("/api/rejoin-game", rejoinGame);
+app.get("/api/check-pending-claim", checkPendingClaim);
 
 // Socket.IO 설정
 setupGameSocket(io);

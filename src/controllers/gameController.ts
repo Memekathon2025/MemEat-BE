@@ -292,3 +292,68 @@ export async function rejoinGame(req: Request, res: Response) {
     });
   }
 }
+
+export async function checkPendingClaim(req: Request, res: Response) {
+  try {
+    const { walletAddress } = req.query;
+
+    if (!walletAddress) {
+      return res.status(400).json({
+        success: false,
+        error: "Wallet address required",
+      });
+    }
+
+    // EXITED 상태의 세션 조회 (claim 안한 것)
+    const { data: exitedSessions, error } = await supabase
+      .from("game_sessions")
+      .select("*")
+      .eq("player_address", (walletAddress as string).toLowerCase())
+      .eq("status", "EXITED")
+      .order("created_at", { ascending: false })
+      .limit(1);
+
+    if (error) throw error;
+
+    if (exitedSessions && exitedSessions.length > 0) {
+      const session = exitedSessions[0];
+
+      // 컨트랙트 상태 확인 (혹시 이미 claim했는지)
+      const playerStatus = await contractService.getPlayerStatus(
+        walletAddress as string
+      );
+
+      if (Number(playerStatus) === 2) {
+        // 여전히 Exited (claim 안함)
+        return res.json({
+          success: true,
+          hasPendingClaim: true,
+          session: {
+            gameId: session.game_id,
+            finalScore: session.final_score,
+            rewardTokens: session.reward_tokens,
+            rewardAmounts: session.reward_amounts,
+            survivalTime: session.survival_time,
+          },
+        });
+      } else if (Number(playerStatus) === 4) {
+        // 이미 Claimed (DB만 업데이트 안된 경우)
+        await supabase
+          .from("game_sessions")
+          .update({ status: "CLAIMED" })
+          .eq("session_id", session.session_id);
+      }
+    }
+
+    return res.json({
+      success: true,
+      hasPendingClaim: false,
+    });
+  } catch (error: any) {
+    console.error("❌ Error checking pending claim:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message || "Failed to check pending claim",
+    });
+  }
+}
