@@ -197,11 +197,12 @@ export function setupGameSocket(io: Server) {
 
             try {
               // 컨트랙트 상태 업데이트 (시간이 걸림)
-              const success = await gameService.handlePlayerDeath(socketId);
+              const result = await gameService.handlePlayerDeath(socketId);
 
               // 완료 알림 (rejoin 가능 상태)
               io.to(socketId).emit("blockchain-update-complete", {
-                success,
+                success: result.success,
+                status: result.status,
                 playerAddress: playerSnapshot.walletAddress,
               });
 
