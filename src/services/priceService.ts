@@ -52,7 +52,7 @@ export class PriceService {
       }
 
       const data = await response.json();
-      const price = parseFloat(data?.chainToken?.priceNow || "0");
+      const price = parseFloat((data as any)?.chainToken?.priceNow || "0");
 
       // 캐시 저장
       this.priceCache.set(cacheKey, { price, timestamp: Date.now() });
